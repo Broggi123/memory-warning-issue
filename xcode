@@ -1,0 +1,290 @@
+#import "PushNotificationHandler.h"
+#import "AppDelegate.h"
+#import "WonUpDataManager.h"
+#import "UserModel.h"
+#import "TabViewController.h"
+#import "WorkoutFeedDetailViewController.h"
+#import "WorkoutModel.h"
+#import "ChallengeDetailViewController.h"
+#import "WorkoutDetailViewController.h"
+#import "PushBannerNotificationView.h"
+#import "NotificationViewController.h"
+#import "AddWorkoutViewController.h"
+
+#define kNotificationType @"type"
+#define kNotificationId @"id"
+#define kNotificationAPS @"aps"
+#define kNotificationMessage @"alert"
+#define kUserName @"sender"
+#define kUserProfilePic @"pic"
+#define kNotificationComment @"comment"
+
+@interface PushNotificationHandler()
+{
+    NSDictionary *notificationData;
+}
+
+@end
+
+@implementation PushNotificationHandler
+
+static PushNotificationHandler * sharedSingleton = nil;
+
++ (PushNotificationHandler*) shareSingleton
+{
+	@synchronized(self)
+    {
+		if(!sharedSingleton)
+			sharedSingleton = [[PushNotificationHandler alloc] init];
+	}
+	return sharedSingleton;
+}
+
+- (void)handleNotification:(NSDictionary *)notification applicationState:(UIApplicationState)state
+{
+    NSLog(@"Notification : %@",notification);
+    
+    notificationData = [NSDictionary dictionaryWithDictionary:notification];
+    
+    UserModel *userModel = [WonUpDataManager getUserModel];
+    if (userModel && userModel.sessionId.length)
+    {
+        [[NSNotificationCenter defaultCenter] postNotificationName:kRefreshDataNotification object:nil];
+        
+        if (state == UIApplicationStateActive)
+        {
+            NSString *notificationType = [notificationData getStringForKey:kNotificationType];
+
+            if ([notificationType isEqualToString:PAYLOAD_NOTIFICATION_TYPE_COMMENT])
+            {
+                WorkoutFeedDetailViewController *workoutFeedDetailViewController = nil;
+                
+                UITabBarController *tabbarController = [self getCurrentTabbarController];
+                UINavigationController *tabbarNavigationController = nil;
+                
+                if (tabbarController && [tabbarController.selectedViewController isKindOfClass:[UINavigationController class]])
+                {
+                    tabbarNavigationController = (UINavigationController *)tabbarController.selectedViewController;
+                }
+
+                if (tabbarNavigationController)
+                {
+                    UIViewController *viewController = tabbarNavigationController.viewControllers[tabbarNavigationController.viewControllers.count-1];
+                    
+                    if ([viewController isKindOfClass:[WorkoutFeedDetailViewController class]])
+                    {
+                        workoutFeedDetailViewController = (WorkoutFeedDetailViewController *) viewController;
+                    }
+                }
+                
+                if (workoutFeedDetailViewController)
+                {
+                    NSString *workoutId = [notificationData getStringForKey:kNotificationId];
+                    
+                    if ([workoutId isEqualToString:[workoutFeedDetailViewController getCurrentWorkout].workoutId])
+                    {
+                        NSString *message = [notificationData getStringForKey:kNotificationComment];
+                        NSString *userName = [notificationData getStringForKey:kUserName];
+
+                        [workoutFeedDetailViewController handleIncomingMessage:message userName:userName];
+                    }
+                    else
+                    {
+                        [self showNotificationView];
+                    }
+                }
+                else
+                {
+                    [self showNotificationView];
+                }
+            }
+            else
+            {
+                [self showNotificationView];
+            }
+        }
+        else
+        {
+            [self redirectToScreen];
+        }
+    }
+    else
+    {
+        NSLog(@"Ignored user is logged out");
+    }
+}
+
+- (void)showNotificationView
+{
+    NSString *message = [notificationData[kNotificationAPS] getStringForKey:kNotificationMessage];
+    NSString *picId = [notificationData getStringForKey:kUserProfilePic];
+
+    if (message.length == 0)
+        message = @"You have new notification.";
+    
+    [PushBannerNotificationView showNotificationWithMessage:message userPictureURL:picId onOpenClickBlock:^{
+        [self redirectToScreen];
+    }];
+}
+
+- (void)redirectToScreen
+{
+    NSString *notificationType = [notificationData getStringForKey:kNotificationType];
+    
+    if ([notificationType isEqualToString:PAYLOAD_NOTIFICATION_TYPE_CHALLENGE])
+    {
+        [self showPushNotificationForChallenge];
+    }
+    else if ([notificationType isEqualToString:PAYLOAD_NOTIFICATION_TYPE_WORKOUT])
+    {
+        [self showPushNotificationForWorkout];
+    }
+    else if ([notificationType isEqualToString:PAYLOAD_NOTIFICATION_TYPE_COMMENT])
+    {
+        [self showPushNotificationForComment];
+    }
+    else
+    {
+        NSLog(@"Unknown type, please show message");
+        [self showPushNotificationForUnknownType];
+    }
+    
+    [[NSNotificationCenter defaultCenter] postNotificationName:kClearBadgeCountNotification object:self];
+}
+
+- (void)showPushNotificationForChallenge
+{
+    UITabBarController *tabbarController = [self getCurrentTabbarController];
+    if (tabbarController.selectedIndex == 1)
+    {
+        UINavigationController *addworkoutNavigationController = (UINavigationController *)tabbarController.selectedViewController;
+        AddWorkoutViewController *addWorkoutViewController = addworkoutNavigationController.viewControllers[addworkoutNavigationController.viewControllers.count-1];
+        [addWorkoutViewController takeDownViewForNotification];
+        
+        tabbarController.selectedIndex = 3;
+    }
+    
+    UINavigationController *tabbarNavigationController = nil;
+    
+    if (tabbarController && [tabbarController.selectedViewController isKindOfClass:[UINavigationController class]])
+    {
+        tabbarNavigationController = (UINavigationController *)tabbarController.selectedViewController;
+    }
+    
+    NSString *challengeId = [notificationData getStringForKey:kNotificationId];
+    
+    UIStoryboard *storyboard = [UIStoryboard storyboardWithName:@"Challenge" bundle:nil];
+    
+    ChallengeDetailViewController *challengeDetailViewController = [storyboard instantiateViewControllerWithIdentifier:@"ChallengeDetailScreen"];
+    [challengeDetailViewController initWithChallengeId:challengeId viewOpenedFrom:VIEW_OPENED_FROM_PUSH_NOTIFICATION];
+    
+    if (tabbarNavigationController.viewControllers.count > 1)
+    {
+        NSMutableArray *controllerStack = [NSMutableArray arrayWithArray:tabbarNavigationController.viewControllers];
+        [controllerStack replaceObjectAtIndex:1 withObject:challengeDetailViewController];
+        [tabbarNavigationController setViewControllers:controllerStack animated:YES];
+    }
+    else
+    {
+        [tabbarNavigationController pushViewController:challengeDetailViewController animated:YES];
+    }
+}
+
+- (void)showPushNotificationForWorkout
+{
+    UITabBarController *tabbarController = [self getCurrentTabbarController];
+    if (tabbarController.selectedIndex == 1)
+    {
+        UINavigationController *addworkoutNavigationController = (UINavigationController *)tabbarController.selectedViewController;
+        AddWorkoutViewController *addWorkoutViewController = addworkoutNavigationController.viewControllers[addworkoutNavigationController.viewControllers.count-1];
+        [addWorkoutViewController takeDownViewForNotification];
+
+        tabbarController.selectedIndex = 3;
+    }
+
+    UINavigationController *tabbarNavigationController = nil;
+    
+    if (tabbarController && [tabbarController.selectedViewController isKindOfClass:[UINavigationController class]])
+    {
+        tabbarNavigationController = (UINavigationController *)tabbarController.selectedViewController;
+    }
+
+    NSString *workoutId = [notificationData getStringForKey:kNotificationId];
+    
+    UIStoryboard *storyboard = [UIStoryboard storyboardWithName:@"AddWorkout" bundle:nil];
+    
+    WorkoutDetailViewController *workoutDetailViewController = [storyboard instantiateViewControllerWithIdentifier:@"WorkoutDetailScreen"];
+    [workoutDetailViewController initWithWorkoutId:workoutId];
+    
+    if (tabbarNavigationController.viewControllers.count > 1)
+    {
+        NSMutableArray *controllerStack = [NSMutableArray arrayWithArray:tabbarNavigationController.viewControllers];
+        [controllerStack replaceObjectAtIndex:1 withObject:workoutDetailViewController];
+        [tabbarNavigationController setViewControllers:controllerStack animated:YES];
+    }
+    else
+    {
+        [tabbarNavigationController pushViewController:workoutDetailViewController animated:YES];
+    }
+}
+
+- (void)showPushNotificationForComment
+{
+    UITabBarController *tabbarController = [self getCurrentTabbarController];
+    if (tabbarController.selectedIndex == 1)
+    {
+        UINavigationController *addworkoutNavigationController = (UINavigationController *)tabbarController.selectedViewController;
+        AddWorkoutViewController *addWorkoutViewController = addworkoutNavigationController.viewControllers[addworkoutNavigationController.viewControllers.count-1];
+        [addWorkoutViewController takeDownViewForNotification];
+
+        tabbarController.selectedIndex = 3;
+    }
+
+    UINavigationController *tabbarNavigationController = nil;
+    
+    if (tabbarController && [tabbarController.selectedViewController isKindOfClass:[UINavigationController class]])
+    {
+        tabbarNavigationController = (UINavigationController *)tabbarController.selectedViewController;
+    }
+    
+    NSString *workoutId = [notificationData getStringForKey:kNotificationId];
+    
+    UIStoryboard *storyboard = [UIStoryboard storyboardWithName:@"ChallengeFeed" bundle:nil];
+    
+    WorkoutFeedDetailViewController *workoutFeedDetailViewController = [storyboard instantiateViewControllerWithIdentifier:@"WorkoutFeedDetailViewScreen"];
+    [workoutFeedDetailViewController initWithWorkoutId:workoutId];
+    
+    if (tabbarNavigationController.viewControllers.count > 1)
+    {
+        NSMutableArray *controllerStack = [NSMutableArray arrayWithArray:tabbarNavigationController.viewControllers];
+        [controllerStack replaceObjectAtIndex:1 withObject:workoutFeedDetailViewController];
+        [tabbarNavigationController setViewControllers:controllerStack animated:YES];
+    }
+    else
+    {
+        [tabbarNavigationController pushViewController:workoutFeedDetailViewController animated:YES];
+    }
+}
+
+- (void)showPushNotificationForUnknownType
+{
+    [[[UIAlertView alloc] initWithTitle:@"New Notification!" message:@"You have new notification, please open notification tab." delegate:nil cancelButtonTitle:@"OK" otherButtonTitles:nil] show];
+}
+
+- (UITabBarController *)getCurrentTabbarController
+{
+    AppDelegate *appDelegate = [AppDelegate getAppDelegate];
+
+    UINavigationController *rootNavigationController = (UINavigationController *)appDelegate.window.rootViewController;
+    
+    UITabBarController *tabbarController = rootNavigationController.viewControllers[rootNavigationController.viewControllers.count-1];
+    
+    if ([tabbarController isMemberOfClass:[TabViewController class]])
+    {
+        return tabbarController;
+    }
+
+    return nil;
+}
+#warning Memory warning issue
+@end
